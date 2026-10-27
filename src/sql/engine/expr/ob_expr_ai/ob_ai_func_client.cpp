@@ -211,7 +211,16 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
         break;
       } else {
         LOG_WARN("retryable http status code", K(http_code), K(i));
-        int64_t delay_ms = 1000 * (1 << i) + rand() % 1000;
+        const int64_t delay_ms = 1000 * (1 << i) + rand() % 1000;
+        const int64_t remain_us = THIS_WORKER.is_timeout_ts_valid()
+                                      ? THIS_WORKER.get_timeout_remain()
+                                      : INT64_MAX;
+        if (i == max_retry_times_ || remain_us <= delay_ms * 1000) {
+          // No attempt is left, or another backoff would overrun the statement deadline.
+          // Leave the loop with the real status code so the caller sees the HTTP failure
+          // instead of a bare OB_TIMEOUT that hides what the service answered.
+          break;
+        }
         ob_usleep(delay_ms * 1000);
         response_buf.reset();
       }

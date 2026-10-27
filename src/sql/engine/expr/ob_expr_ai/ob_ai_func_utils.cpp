@@ -231,19 +231,59 @@ int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator,
       ret = OB_INVALID_DATA;
     } else {
       ObJsonArray *data_array = static_cast<ObJsonArray *>(data_node);
-      ObJsonNode *embedding_node = nullptr;
-      for (int64_t i = 0; OB_SUCC(ret) && i < data_array->element_count(); i++) {
-        if (OB_ISNULL(embedding_node = data_array->get_value(i))) {
-          ret = OB_INVALID_DATA;
-        } else if (embedding_node->json_type() != ObJsonNodeType::J_OBJECT) {
+      const int64_t count = data_array->element_count();
+      // The embeddings protocol allows `data` to arrive in any order: every element
+      // carries the `index` of the input it belongs to. Map each vector back to its
+      // input position instead of trusting arrival order, otherwise an out-of-order
+      // response silently attaches vectors to the wrong rows.
+      ObJsonNode **slots = nullptr;
+      if (count > 0) {
+        void *buf = allocator.alloc(sizeof(ObJsonNode *) * count);
+        if (OB_ISNULL(buf)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          slots = static_cast<ObJsonNode **>(buf);
+          MEMSET(slots, 0, sizeof(ObJsonNode *) * count);
+        }
+      }
+      bool has_index = false;
+      bool has_positional = false;
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; i++) {
+        ObJsonNode *embedding_node = data_array->get_value(i);
+        if (OB_ISNULL(embedding_node) || embedding_node->json_type() != ObJsonNodeType::J_OBJECT) {
           ret = OB_INVALID_DATA;
         } else {
           ObJsonObject *embedding_obj = static_cast<ObJsonObject *>(embedding_node);
           ObJsonNode *embedding = embedding_obj->get_value("embedding");
+          ObJsonNode *index_node = embedding_obj->get_value("index");
           if (OB_ISNULL(embedding)) {
             ret = OB_INVALID_DATA;
-          } else if (OB_FAIL(result_array->append(embedding))) {
+          } else if (OB_ISNULL(index_node)) {
+            // Providers without the `index` field (Ollama native, older mocks) can only
+            // be trusted byte-for-byte in arrival order.
+            has_positional = true;
+            slots[i] = embedding;
+          } else if (index_node->json_type() != ObJsonNodeType::J_INT) {
+            ret = OB_INVALID_DATA;
+          } else {
+            const int64_t index = static_cast<ObJsonInt *>(index_node)->get_int();
+            if (index < 0 || index >= count || OB_NOT_NULL(slots[index])) {
+              ret = OB_INVALID_DATA;
+            } else {
+              has_index = true;
+              slots[index] = embedding;
+            }
           }
+        }
+      }
+      if (OB_SUCC(ret) && has_index && has_positional) {
+        // Mixing indexed and unindexed elements is ambiguous.
+        ret = OB_INVALID_DATA;
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; i++) {
+        if (OB_ISNULL(slots[i])) {
+          ret = OB_INVALID_DATA;
+        } else if (OB_FAIL(result_array->append(slots[i]))) {
         }
       }
       if (OB_SUCC(ret)) {

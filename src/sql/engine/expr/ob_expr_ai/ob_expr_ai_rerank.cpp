@@ -289,16 +289,29 @@ int ObExprAIRerank::sort_document_array_by_model_result(ObIAllocator &allocator,
         ObJsonDouble *score_value = static_cast<ObJsonDouble *>(model_result_obj->get_value(SCORE_KEY));
         if (OB_ISNULL(index_value) || OB_ISNULL(score_value)) {
           ret = OB_ERR_UNEXPECTED;
+        } else if (index_value->json_type() != ObJsonNodeType::J_INT ||
+                   (score_value->json_type() != ObJsonNodeType::J_DOUBLE &&
+                    score_value->json_type() != ObJsonNodeType::J_INT)) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT,
+                         "ai_rerank, model result must carry an integer index and a numeric score");
         } else {
           int64_t index = index_value->value();
-          ObJsonObject *origin_obj = static_cast<ObJsonObject *>(document_array->get_value(index));
-          ObJsonObject *new_obj = nullptr;
-          if (OB_ISNULL(origin_obj)) {
-            ret = OB_ERR_UNEXPECTED;
-          } else if (OB_ISNULL(new_obj = static_cast<ObJsonObject *>(origin_obj->clone(&allocator, true)))) {
-            ret = OB_ERR_UNEXPECTED;
-          } else if (OB_FAIL(new_obj->add(MODEL_SCORE_KEY, score_value))) {
-          } else if (OB_FAIL(sorted_document_array_obj->append(new_obj))) {
+          const int64_t document_count = document_array->element_count();
+          if (index < 0 || index >= document_count) {
+            ret = OB_INVALID_ARGUMENT;
+            LOG_USER_ERROR(OB_INVALID_ARGUMENT,
+                           "ai_rerank, model result index is out of the document range");
+          } else {
+            ObJsonObject *origin_obj = static_cast<ObJsonObject *>(document_array->get_value(index));
+            ObJsonObject *new_obj = nullptr;
+            if (OB_ISNULL(origin_obj)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_ISNULL(new_obj = static_cast<ObJsonObject *>(origin_obj->clone(&allocator, true)))) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_FAIL(new_obj->add(MODEL_SCORE_KEY, score_value))) {
+            } else if (OB_FAIL(sorted_document_array_obj->append(new_obj))) {
+            }
           }
         }
       }
